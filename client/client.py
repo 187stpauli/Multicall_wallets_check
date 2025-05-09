@@ -1,15 +1,20 @@
+from eth_abi import decode_single
 from eth_utils import to_checksum_address
+from rlp import DecodingError
 from web3.middleware.geth_poa import async_geth_poa_middleware
-from web3.exceptions import TransactionNotFound
+from web3.exceptions import TransactionNotFound, ContractLogicError, BadFunctionCallOutput
 from web3 import AsyncWeb3, AsyncHTTPProvider
 from web3.contract import AsyncContract
-from typing import Optional, Union
+from typing import Optional, Union, List, Dict
 from web3.types import TxParams
 from hexbytes import HexBytes
 from client.networks import Network
 import asyncio
 import logging
 import json
+
+with open("abi/multicall_abi.json", "r", encoding="utf-8") as f:
+    MULTICALL_ABI = json.load(f)
 
 with open("abi/erc20_abi.json", "r", encoding="utf-8") as file:
     ERC20_ABI = json.load(file)
@@ -52,6 +57,66 @@ class Client:
         address = to_checksum_address(address)
         balance_wei = await self.w3.eth.get_balance(address)
         return balance_wei
+
+    async def to_checksum_list(self, addresses: list[str]) -> list[str]:
+        checksummed = []
+        for addr in addresses:
+            if isinstance(addr, str) and addr.startswith("0x") and len(addr) == 42:
+                try:
+                    checksummed.append(self.w3.to_checksum_address(addr))
+                except ValueError:
+                    continue  # пропускаем если адрес некорректен
+        return checksummed
+
+    async def fetch_balances(self, token_addresses: dict[str, str],
+                             wallets: List[str]) -> Dict[str, Dict[str, float]] | None:
+        try:
+            multicall_address = to_checksum_address(self.multicall_address)
+            multicall = self.w3.eth.contract(address=multicall_address, abi=MULTICALL_ABI)
+
+            calls = []
+            token_symbols = list(token_addresses.keys())
+
+            for symbol, addr in token_addresses.items():
+                contract = self.w3.eth.contract(address=to_checksum_address(addr), abi=ERC20_ABI)
+                for wallet in wallets:
+                    data = contract.encodeABI(fn_name="balanceOf", args=[wallet])
+                    calls.append((addr, data))
+
+            multicall_inputs = [
+                {
+                    "target": to_checksum_address(target),
+                    "callData": data
+                } for target, data in calls
+            ]
+
+            results = await multicall.functions.tryAggregate(False, multicall_inputs).call()
+
+            # Словарь: {wallet: {token: balance}}
+            output = {wallet: {} for wallet in wallets}
+            idx = 0
+            for symbol in token_symbols:
+                token_address = token_addresses[symbol]
+                for wallet in wallets:
+                    success, return_data = results[idx]
+                    raw_balance = decode_single('uint256', return_data) if success else 0
+                    human_balance = await self.from_wei_main(raw_balance, token_address)
+                    output[wallet][symbol] = human_balance
+                    idx += 1
+
+            # Добавляем нативные балансы
+            for wallet in wallets:
+                balance_wei = await self.w3.eth.get_balance(to_checksum_address(wallet))
+                output[wallet]["Native"] = await self.from_wei_main(balance_wei)
+
+            return output
+
+        except (ValueError, DecodingError, ContractLogicError, BadFunctionCallOutput) as e:
+            logger.error(f"❗ Ошибка при получении балансов: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❗ Неизвестная ошибка: {e}")
+            return None
 
     # Получение баланса ERC20
     async def get_erc20_balance(self, address: str) -> float | int:

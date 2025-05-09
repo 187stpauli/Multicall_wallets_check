@@ -1,17 +1,14 @@
 from config.configvalidator import ConfigValidator
 from client.client import Client
-from modules.bridge import Bridge
 from utils.logger import logger
 import asyncio
 import json
-
-with open("abi/multicall_abi.json", "r", encoding="utf-8") as f:
-    MULTICALL_ABI = json.load(f)
 
 
 async def main():
     try:
         logger.info("🚀 Запуск скрипта...\n")
+
         # Загрузка параметров
         logger.info("⚙️ Загрузка и валидация параметров...\n")
         validator = ConfigValidator("config/settings.json", "config/wallets.txt")
@@ -19,8 +16,10 @@ async def main():
 
         with open("constants/networks_data.json", "r", encoding="utf-8") as file:
             networks_data = json.load(file)
-
+        with open("constants/tokens.json", "r", encoding="utf-8") as file:
+            tokens = json.load(file)
         network = networks_data[settings["network"]]
+        token_addresses = tokens[settings["network"]]
 
         # Инициализация клиента
         client = Client(
@@ -29,29 +28,18 @@ async def main():
             explorer_url=network["explorer_url"],
             multicall_address=network["multicall_address"]
         )
-        balance_calls = []
+        wallets_checksum = await client.to_checksum_list(wallets)
 
-        balance_call = token_contract.encode_abi(
-            fn_name="",
-            args=([
-                ""
-            ])
-        )
-        balance_calls.append([
-            123
-        ])
-        real_amount = 0
-        if settings["token"] == "USDC":
-            real_amount = await client.to_wei_main(client.amount, from_network['usdc_address'])
-        elif settings["token"] == "ETH":
-            real_amount = await client.to_wei_main(client.amount)
-        await client.set_amount(real_amount)
-
-        # Запуск бриджа
-        logger.info("⚙️ Собираем и подписываем транзакцию...\n")
-        bridge = await Bridge.create(client, from_network, to_network, settings, pool_abi)
-        await bridge.execute_bridge()
-
+        # Запуск фетча
+        logger.info("⚙️ Получение балансов...\n")
+        balances = await client.fetch_balances(token_addresses, wallets_checksum)
+        if balances:
+            for wallet, tokens in balances.items():
+                formatted = ", ".join([f"{symbol}: {value:.4f}" for symbol, value in tokens.items()])
+                print(f"{wallet} → {formatted}")
+            logger.info("✅ Балансы успешно получены.\n")
+        else:
+            logger.error("❌ Ошибка при получении балансов.")
     except Exception as e:
         logger.error(f"Произошла ошибка в основном пути: {e}")
 
