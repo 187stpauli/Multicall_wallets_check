@@ -1,4 +1,4 @@
-from eth_abi import decode_single
+from eth_abi.codec import decode_single
 from eth_utils import to_checksum_address
 from rlp import DecodingError
 from web3.middleware.geth_poa import async_geth_poa_middleware
@@ -70,6 +70,17 @@ class Client:
 
     async def fetch_balances(self, token_addresses: dict[str, str],
                              wallets: List[str]) -> Dict[str, Dict[str, float]] | None:
+        """
+        Получает балансы множества токенов для множества кошельков с помощью Multicall.
+        
+        Args:
+            token_addresses: Словарь {символ_токена: адрес_контракта}
+            wallets: Список адресов кошельков
+            
+        Returns:
+            Dictionary in format {wallet_address: {token_symbol: balance}} 
+            or None if error occurred
+        """
         try:
             multicall_address = to_checksum_address(self.multicall_address)
             multicall = self.w3.eth.contract(address=multicall_address, abi=MULTICALL_ABI)
@@ -111,8 +122,17 @@ class Client:
 
             return output
 
-        except (ValueError, DecodingError, ContractLogicError, BadFunctionCallOutput) as e:
-            logger.error(f"❗ Ошибка при получении балансов: {e}")
+        except (ValueError, DecodingError) as e:
+            logger.error(f"❗ Ошибка формата данных: {e}")
+            return None
+        except ContractLogicError as e:
+            logger.error(f"❗ Ошибка в смарт-контракте: {e}")
+            return None
+        except BadFunctionCallOutput as e:
+            logger.error(f"❗ Ошибка при вызове функции: {e}")
+            return None
+        except ConnectionError as e:
+            logger.error(f"❗ Ошибка соединения с RPC узлом: {e}")
             return None
         except Exception as e:
             logger.error(f"❗ Неизвестная ошибка: {e}")
